@@ -675,18 +675,18 @@ UINT VertexInputAssemblies::getInputAssembly(ID3D11InputLayout* currentInputLayo
 HRESULT __stdcall hkCreateInputLayout(ID3D11Device* pDevice, const D3D11_INPUT_ELEMENT_DESC* pInputElementDescs, UINT NumElements, const void* pShaderBytecodeWithInputSignature, SIZE_T BytecodeLength, ID3D11InputLayout** ppInputLayout) {
 	// Create the input layout
 	if (pCreateInputLayoutDummy(pDevice, pInputElementDescs, NumElements, pShaderBytecodeWithInputSignature, BytecodeLength, ppInputLayout) != S_OK) {
-		OutputDebugStringW(L"ERROR 0: Could not create input layout!");
+		//OutputDebugStringW(L"ERROR 0: Could not create input layout!");
 		return E_FAIL;
 
 	}
 
-	DUMP1 = true;
-
-	if (DUMP1 && DUMP2 || !DUMP1 && !DUMP2) {
+	//DUMP1 = true;
+	//DUMP2 = true; not supp to be here
+	/*if (DUMP1 && DUMP2 || !DUMP1 && !DUMP2) {
 		return S_OK;
-	}
+	}*/
 
-	OutputDebugStringW(L"Successfully passed stage 0!");
+	//OutputDebugStringW(L"Successfully passed stage 0!");
 
 	// Find if it already exists and update it
 	auto mapIterator = sceneData.vertexInputStore.find(*ppInputLayout);
@@ -694,7 +694,7 @@ HRESULT __stdcall hkCreateInputLayout(ID3D11Device* pDevice, const D3D11_INPUT_E
 		sceneData.vertexInputStore.erase(mapIterator);
 	}
 
-	OutputDebugStringW(L"Successfully passed stage 1!");
+	//OutputDebugStringW(L"Successfully passed stage 1!");
 	
 	// Add all elements to input layout
 	OrigD3D11VertexDeclaration layouts;
@@ -715,36 +715,46 @@ HRESULT __stdcall hkCreateInputLayout(ID3D11Device* pDevice, const D3D11_INPUT_E
 		layouts.push_back(desc);
 	}
 
-	OutputDebugStringW(L"Successfully passed stage 2!");
+	//OutputDebugStringW(L"Successfully passed stage 2!");
 
 	// Add to sceneData database
 	sceneData.addInputAssembly(*ppInputLayout, layouts);
 
-	OutputDebugStringW(L"Successfully passed stage 3!");
+	//OutputDebugStringW(L"Successfully passed stage 3!");
 
 	// Output all the scene data currently -  Visible in debug view
 	// [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[
-	for (size_t i = 0; i < layouts.size(); i++) {
+	/*for (size_t i = 0; i < layouts.size(); i++) {
 		DebugLogger::print_input_element_description(layouts[i]);
-	}
+	}*/
 	// ]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]
 
-	OutputDebugStringW(L"Successfully passed stage 4!");
+	//OutputDebugStringW(L"Successfully passed stage 4!");
 	
 
 	// End the dumping
-	DUMP2 = true;
 
 	return S_OK;
 }
 
 void __stdcall hkDrawIndexed(ID3D11DeviceContext* pContext, UINT IndexCount, UINT StartIndexLocation, INT BaseVertexLocation) {
+	// We're only dumping 1 Vertex buffer
+	if (DUMP1 && DUMP2 || !DUMP1 && !DUMP2) {
+		return pDrawIndexedDummy(pContext, IndexCount, StartIndexLocation, BaseVertexLocation);
+	}
+	
 	OutputDebugStringW(L"START: Obtaining Vertex Buffer");
-
+	DUMP2 = true;
+	return pDrawIndexedDummy(pContext, IndexCount, StartIndexLocation, BaseVertexLocation);
+	//################################################################################################
+	// TESTING
 	// Step 1: Get Vertex Declarations - Check if we've looped the scene (Check input assembly is already in data map)
 	InputVertexDeclaration inputVertexDeclaration;
 	OutputVertexDeclaration outputVertexDeclaration;
 	obtainVertexDeclarations(pContext, inputVertexDeclaration, outputVertexDeclaration);
+
+	// PRINT THEM
+	//################################################################################################
 
 	// Step 2: Get Primitives & Calculate number of primitives and create an array from this
 	D3D11_PRIMITIVE_TOPOLOGY topology = obtainPrimitives(pContext);
@@ -766,6 +776,8 @@ void __stdcall hkDrawIndexed(ID3D11DeviceContext* pContext, UINT IndexCount, UIN
 
 	// Step 6: Extract to .obj File
 	//extractMeshToFile();
+
+	DUMP2 = true;
 
 	OutputDebugStringW(L"END: Finished Dump! Vertices+Faces Extracted!");
 	return pDrawIndexedDummy(pContext, IndexCount, StartIndexLocation, BaseVertexLocation);
@@ -922,27 +934,29 @@ HRESULT WINAPI D3D11CreateDevice(IDXGIAdapter* pAdapter, D3D_DRIVER_TYPE DriverT
 
 		// First hook into CreateInputLayout
 		if (MH_CreateHook(reinterpret_cast<void**>(pCreateInputLayoutOriginal), &hkCreateInputLayout, reinterpret_cast<void**>(&pCreateInputLayoutDummy)) != MH_OK) {
-			OutputDebugStringW(L"HOOK ERROR: WE HAVE NOT HOOKED");
+			OutputDebugStringW(L"HOOK ERROR 1: WE HAVE NOT HOOKED");
 			return result;
 		}
 		
 		if (MH_EnableHook(pCreateInputLayoutOriginal) != MH_OK) {
-			OutputDebugStringW(L"HOOK ERROR: NOT ENABLED");
+			OutputDebugStringW(L"HOOK ERROR 1: NOT ENABLED");
 			return result;
 		}
 		
 		OutputDebugStringW(L"HOOK: CreateInputLayout Succeeded!");
 
 		// Second hook into DrawIndexed
-		/*if (MH_CreateHook(reinterpret_cast<void**>(pDrawIndexedOriginal), &hkDrawIndexed, reinterpret_cast<void**>(&pDrawIndexedDummy)) != MH_OK) {
-			OutputDebugStringW(L"HOOK: WE HAVE NOT HOOKED");
+		if (MH_CreateHook(reinterpret_cast<void**>(pDrawIndexedOriginal), &hkDrawIndexed, reinterpret_cast<void**>(&pDrawIndexedDummy)) != MH_OK) {
+			OutputDebugStringW(L"HOOK ERROR 2: WE HAVE NOT HOOKED");
 			return result;
 		}
-		OutputDebugStringW(L"HOOK: DrawIndexed Succeeded!");
 
 		if (MH_EnableHook(pDrawIndexedOriginal) != MH_OK) {
+			OutputDebugStringW(L"HOOK ERROR 2: WE HAVE NOT HOOKED");
 			return result;
-		}*/
+		}
+
+		OutputDebugStringW(L"HOOK: DrawIndexed Succeeded!");
 
 	}
 
@@ -1158,7 +1172,18 @@ int WINAPI main() {
 
 		if (GetAsyncKeyState('Q') & 1) {
 			DUMP1 = true;
+			OutputDebugStringW(L"Q was pressed!");
 		}
+
+		// Print global information
+		if (GetAsyncKeyState('P') & 1) {
+			OutputDebugStringA(std::to_string(DUMP1).c_str());
+			OutputDebugStringA(std::to_string(DUMP2).c_str());
+
+			// Check Scenedata is still working
+			OutputDebugStringA(std::to_string(sceneData.vertexInputStore.size()).c_str());
+		}
+
 
 		if (GetAsyncKeyState(VK_F1)) {
 			break;
@@ -1189,7 +1214,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
 			dll_handle = hinstDLL;
 			loadOriginalD3D11();
 
-			//CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)main, NULL, 0, NULL);
+			CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)main, NULL, 0, NULL);
 
 			break;
 
