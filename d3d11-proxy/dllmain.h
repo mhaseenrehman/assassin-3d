@@ -175,5 +175,8 @@ BOOL DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved);
 class DebugLogger {
 public:
 	static void print_input_element_description(OrigD3D11InputElementDesc desc);
+
+	static void print_input_d3d11_vertex_element(InputD3D11VertexElement inputElem);
+
 	static void print_input_layout();
 };

@@ -240,7 +240,7 @@ HRESULT copyBuffer(ID3D11DeviceContext* pContext, ID3D11Buffer* pSrcBuffer, ID3D
 
 //-------------------------------------------- STEP 1 --------------------------------------------
 
-HRESULT ObtainOutputVertexDeclaration(const InputVertexDeclaration &inputVertexDeclaration, OutputVertexDeclaration &outputVertexDeclaration) {
+HRESULT obtainOutputVertexDeclaration(const InputVertexDeclaration &inputVertexDeclaration, OutputVertexDeclaration &outputVertexDeclaration) {
 	DWORD offset = 0;
 
 	for (size_t i = 0; i < inputVertexDeclaration.declaration.size(); i++) {
@@ -274,33 +274,56 @@ HRESULT obtainVertexDeclarations(ID3D11DeviceContext* pContext, InputVertexDecla
 	// First get input layout for the current draw call
 	ID3D11InputLayout* currentInputLayout = NULL;
 	pContext->IAGetInputLayout(&currentInputLayout);
+
+	OutputDebugStringW(L"------- Stage 1 complete!-----------");
 	
 	// Find this input layout in the database and obtain the Vertex Declaration that comes with it
-	OrigD3D11VertexDeclaration OrigVertexDecl;
-	sceneData.getInputAssembly(currentInputLayout, OrigVertexDecl);
+	OrigD3D11VertexDeclaration origVertexDecl;
+	sceneData.getInputAssembly(currentInputLayout, origVertexDecl);
+
+	// [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[
+	for (size_t i = 0; i < origVertexDecl.size(); i++) {
+		DebugLogger::print_input_element_description(origVertexDecl[i]);
+	}
+	// [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[
+
+	OutputDebugStringW(L"------- Stage 2 complete!-----------");
 
 	// Create an input vertex declaration from the Input layout and the Vertex Declarations it has
-	for (size_t i = 0; i < OrigVertexDecl.size(); i++) {
+	for (size_t i = 0; i < origVertexDecl.size(); i++) {
 		InputD3D11VertexElement inputElement;
 
-		OrigD3D11InputElementDesc origElement = OrigVertexDecl[i];
-		
+		OrigD3D11InputElementDesc origElement = origVertexDecl[i];
 		strcpy(inputElement.UsageSemantic, origElement.SemanticName);
 		inputElement.SemanticIndex = origElement.SemanticIndex;
 		inputElement.InputSlot = origElement.InputSlot;
 		inputElement.Offset = origElement.AlignedByteOffset;
 		inputElement.Type = origElement.Format;
+
+		// ############################### DO THIS NOW ##################################
+
 		inputElement.Size = D3DTypesDatabase::dp_obtainTypeSize(inputElement.Type);
+
+		// ##############################################################################
 		
 		// Add to input Vertex Declaration
 		inputVertexDeclaration.declaration.push_back(inputElement);
 	}
 
+	// [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[
+	OutputDebugStringA(std::to_string(inputVertexDeclaration.declaration.size()).c_str());
+	for (size_t i = 0; i < inputVertexDeclaration.declaration.size(); i++) {
+		DebugLogger::print_input_d3d11_vertex_element(inputVertexDeclaration.declaration[i]);
+	}
+	// [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[
+
+	OutputDebugStringW(L"------- Stage 3 complete!-----------");
+
 	// Find all the possible inputs slots for each Vertex Declaration
 	// There can be up to n different slots for each vertex buffer at input assembly stage
 	// Find all the slots and therefore, all the vertex buffers
 	std::vector<DWORD> uniqueSlots;
-	for (size_t i = 0; i < OrigVertexDecl.size(); i++) {
+	for (size_t i = 0; i < origVertexDecl.size(); i++) {
 		DWORD inputSlot = inputVertexDeclaration.declaration[i].InputSlot;
 		BOOL slotFound = FALSE;
 		for (size_t j = 0; j < uniqueSlots.size(); j++) {
@@ -309,11 +332,12 @@ HRESULT obtainVertexDeclarations(ID3D11DeviceContext* pContext, InputVertexDecla
 				break;
 			}
 		}
-
 		if (!slotFound) {
 			uniqueSlots.push_back(inputSlot);
 		}
 	}
+
+	OutputDebugStringW(L"------- Stage 4 complete!-----------");
 
 	// Obtain Correct Stream and offset numbers for each Vertex Buffer
 	// Each Vertex Buffer has an offset from the beginning to each element
@@ -332,11 +356,15 @@ HRESULT obtainVertexDeclarations(ID3D11DeviceContext* pContext, InputVertexDecla
 		}
 	}
 
+	OutputDebugStringW(L"------- Stage 5 complete!-----------");
+
 	// Create Output Vertex Declaration from the input vertex declaration
-	if (ObtainOutputVertexDeclaration(inputVertexDeclaration, outputVertexDeclaration) != S_OK) {
+	if (obtainOutputVertexDeclaration(inputVertexDeclaration, outputVertexDeclaration) != S_OK) {
 		OutputDebugStringW(L"ERROR 1: Output Vertex Declaration not obtained");
 		return E_FAIL;
 	}
+
+	OutputDebugStringW(L"------- Stage 6 complete!-----------");
 
 	return S_OK;
 }
@@ -660,7 +688,7 @@ void VertexInputAssemblies::addInputAssembly(ID3D11InputLayout* ppInputLayout, O
 UINT VertexInputAssemblies::getInputAssembly(ID3D11InputLayout* currentInputLayout, OrigD3D11VertexDeclaration& declaration) {
 	auto iterator = sceneData.vertexInputStore.find(currentInputLayout);
 
-	if (iterator != sceneData.vertexInputStore.end()) {
+	if (iterator == sceneData.vertexInputStore.end()) {
 		OutputDebugStringA("OVD ERROR: No Input Layout found!");
 		return E_FAIL;
 	}
@@ -744,16 +772,19 @@ void __stdcall hkDrawIndexed(ID3D11DeviceContext* pContext, UINT IndexCount, UIN
 	}
 	
 	OutputDebugStringW(L"START: Obtaining Vertex Buffer");
-	DUMP2 = true;
-	return pDrawIndexedDummy(pContext, IndexCount, StartIndexLocation, BaseVertexLocation);
+	
 	//################################################################################################
 	// TESTING
 	// Step 1: Get Vertex Declarations - Check if we've looped the scene (Check input assembly is already in data map)
 	InputVertexDeclaration inputVertexDeclaration;
 	OutputVertexDeclaration outputVertexDeclaration;
 	obtainVertexDeclarations(pContext, inputVertexDeclaration, outputVertexDeclaration);
-
+	
 	// PRINT THEM
+	
+	// Step by step testing - this code is a stopper
+	DUMP2 = true;
+	return pDrawIndexedDummy(pContext, IndexCount, StartIndexLocation, BaseVertexLocation);
 	//################################################################################################
 
 	// Step 2: Get Primitives & Calculate number of primitives and create an array from this
@@ -1252,8 +1283,10 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
 // 
 //------------------------------------------------------------------------------------------------
 
-void DebugLogger::print_input_element_description(OrigD3D11InputElementDesc desc) {
 
+
+void DebugLogger::print_input_element_description(OrigD3D11InputElementDesc desc) {
+	OutputDebugStringA("ORIG INPUT ELEM DESC ---------------------------------------------------");
 	OutputDebugStringA(desc.SemanticName);
 	OutputDebugStringA(std::to_string(desc.SemanticIndex).c_str());
 	OutputDebugStringA(std::to_string(desc.Format).c_str());
@@ -1266,5 +1299,16 @@ void DebugLogger::print_input_element_description(OrigD3D11InputElementDesc desc
 		OutputDebugStringA("D3D11_INPUT_PER_INSTANCE_DATA");
 	}
 	OutputDebugStringA(std::to_string(desc.InstanceDataStepRate).c_str());
+	OutputDebugStringA("---------------------------------------------------");
+}
+
+void DebugLogger::print_input_d3d11_vertex_element(InputD3D11VertexElement inputElem) {
+	OutputDebugStringA("INPUT VERTEX ELEM ---------------------------------------------------");
+	OutputDebugStringA(inputElem.UsageSemantic);
+	OutputDebugStringA(std::to_string(inputElem.SemanticIndex).c_str());
+	OutputDebugStringA(std::to_string(inputElem.Type).c_str());
+	OutputDebugStringA(std::to_string(inputElem.InputSlot).c_str());
+	OutputDebugStringA(std::to_string(inputElem.Size).c_str()); // Always zero for now
+	OutputDebugStringA(std::to_string(inputElem.Offset).c_str());
 	OutputDebugStringA("---------------------------------------------------");
 }
