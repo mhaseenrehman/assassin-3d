@@ -6,6 +6,7 @@
 #include "pch.h"
 #include "dllmain.h"
 
+
 //#define CREATE_DX12
 #define _CRT_SECURE_NO_DEPRECATE
 
@@ -185,7 +186,12 @@ typedef HRESULT(__stdcall* CreateInputLayout_t)(ID3D11Device* pDevice, const D3D
 CreateInputLayout_t pCreateInputLayoutDummy;
 CreateInputLayout_t pCreateInputLayoutOriginal;
 
+typedef HRESULT(__stdcall* Present_t)(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags);
+Present_t pPresentDummy;
+Present_t pPresentOriginal;
+
 VertexInputAssemblies sceneData;
+ID3D11Query* query;
 
 //------------------------------------------------------------------------------------------------
 // 
@@ -217,35 +223,46 @@ HRESULT copyBuffer(ID3D11DeviceContext* pContext, ID3D11Buffer* pSrcBuffer, ID3D
 	D3D11_BUFFER_DESC srcDesc;
 	D3D11_BUFFER_DESC destDesc;
 
-	ID3D11Device* pDeviceRef;
 	*ppDestBuffer = NULL;
 
+	// Obtain Device to obtain
+	ID3D11Device* pDeviceRef;
+	pContext->GetDevice(&pDeviceRef);
+	
+	// Obtain Buffer Description from Source Vertex Buffer
 	pSrcBuffer->GetDesc(&srcDesc);
-
 	destDesc = srcDesc;
 	destDesc.Usage = D3D11_USAGE_STAGING;
 	destDesc.BindFlags = 0;
 	destDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
 
-	pContext->GetDevice(&pDeviceRef);
+	// MiscFlags set to 0 in order to ensure that we don't
+	// Create a Byte address buffer - this requires 32 byte
+	// alignment where vertex buffers may not have that
+	destDesc.MiscFlags = 0;
 
-	if (!pDeviceRef->CreateBuffer(&destDesc, NULL, ppDestBuffer)) {
-		return ERROR;
+	if (FAILED(pDeviceRef->CreateBuffer(&destDesc, NULL, ppDestBuffer))) {
+		return E_FAIL;
 	}
-
+	
+	// Copy From Source Buffer to Destination buffer
 	pContext->CopyResource(*ppDestBuffer, pSrcBuffer);
 
 	return S_OK;
 }
 
 //-------------------------------------------- STEP 1 --------------------------------------------
-
 HRESULT obtainOutputVertexDeclaration(const InputVertexDeclaration &inputVertexDeclaration, OutputVertexDeclaration &outputVertexDeclaration) {
 	DWORD offset = 0;
 
+	// With respect to the OutputVertexDeclaration, for every single attribute of the 
+	// input vertex declaration, we're going to add all of them to the output vertex
+	// declaration. So, essentially, even for input vertex elements that have 0 offset
+	// like for example in the DebugView, you have TEXCOORD at Offset 0 but POSITION
+	// is also at offset 0. Therefore, most likely that TEXCOORD attribute is unused
+	// but still, we take it and append it to the end of the declaration anyway.
 	for (size_t i = 0; i < inputVertexDeclaration.declaration.size(); i++) {
 		OutputD3D11VertexElement outputElem;
-
 		BYTE inputData[64] = { 0 };
 		BYTE unpackedData[64] = { 0 };
 		DWORD compCnt = 0;
@@ -256,13 +273,17 @@ HRESULT obtainOutputVertexDeclaration(const InputVertexDeclaration &inputVertexD
 			return E_FAIL;
 		}
 
+		// Obtain the size of the output vertex element
 		DWORD unpackedSize = D3DTypesDatabase::decodeAndCopy(inputType, inputData, unpackedData, compCnt);
-	
+
+		// Fill in the output vertex element
 		strcpy(outputElem.UsageSemantic, inputVertexDeclaration.declaration[i].UsageSemantic);
 		outputElem.SemanticIndex = inputVertexDeclaration.declaration[i].SemanticIndex;
 		outputElem.Size = unpackedSize;
 		outputElem.Offset = offset;
+		outputElem.Type = inputType;
 
+		// Add the element to the declaration AND add the offset
 		outputVertexDeclaration.declaration.push_back(outputElem);
 		offset += unpackedSize;
 	}
@@ -274,20 +295,10 @@ HRESULT obtainVertexDeclarations(ID3D11DeviceContext* pContext, InputVertexDecla
 	// First get input layout for the current draw call
 	ID3D11InputLayout* currentInputLayout = NULL;
 	pContext->IAGetInputLayout(&currentInputLayout);
-
-	OutputDebugStringW(L"------- Stage 1 complete!-----------");
 	
 	// Find this input layout in the database and obtain the Vertex Declaration that comes with it
 	OrigD3D11VertexDeclaration origVertexDecl;
 	sceneData.getInputAssembly(currentInputLayout, origVertexDecl);
-
-	// [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[
-	for (size_t i = 0; i < origVertexDecl.size(); i++) {
-		DebugLogger::print_input_element_description(origVertexDecl[i]);
-	}
-	// [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[
-
-	OutputDebugStringW(L"------- Stage 2 complete!-----------");
 
 	// Create an input vertex declaration from the Input layout and the Vertex Declarations it has
 	for (size_t i = 0; i < origVertexDecl.size(); i++) {
@@ -299,34 +310,21 @@ HRESULT obtainVertexDeclarations(ID3D11DeviceContext* pContext, InputVertexDecla
 		inputElement.InputSlot = origElement.InputSlot;
 		inputElement.Offset = origElement.AlignedByteOffset;
 		inputElement.Type = origElement.Format;
-
-		// ############################### DO THIS NOW ##################################
-
 		inputElement.Size = D3DTypesDatabase::dp_obtainTypeSize(inputElement.Type);
-
-		// ##############################################################################
 		
 		// Add to input Vertex Declaration
 		inputVertexDeclaration.declaration.push_back(inputElement);
 	}
 
-	// [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[
-	OutputDebugStringA(std::to_string(inputVertexDeclaration.declaration.size()).c_str());
-	for (size_t i = 0; i < inputVertexDeclaration.declaration.size(); i++) {
-		DebugLogger::print_input_d3d11_vertex_element(inputVertexDeclaration.declaration[i]);
-	}
-	// [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[
-
-	OutputDebugStringW(L"------- Stage 3 complete!-----------");
-
 	// Find all the possible inputs slots for each Vertex Declaration
 	// There can be up to n different slots for each vertex buffer at input assembly stage
 	// Find all the slots and therefore, all the vertex buffers
 	std::vector<DWORD> uniqueSlots;
-	for (size_t i = 0; i < origVertexDecl.size(); i++) {
+	for (size_t i = 0; i < inputVertexDeclaration.declaration.size(); i++) {
 		DWORD inputSlot = inputVertexDeclaration.declaration[i].InputSlot;
 		BOOL slotFound = FALSE;
 		for (size_t j = 0; j < uniqueSlots.size(); j++) {
+			// @@@@@ CHANGED @@@@@: uniqueSlots[j] != inputSlot
 			if (uniqueSlots[j] != inputSlot) {
 				slotFound = TRUE;
 				break;
@@ -337,15 +335,12 @@ HRESULT obtainVertexDeclarations(ID3D11DeviceContext* pContext, InputVertexDecla
 		}
 	}
 
-	OutputDebugStringW(L"------- Stage 4 complete!-----------");
-
 	// Obtain Correct Stream and offset numbers for each Vertex Buffer
 	// Each Vertex Buffer has an offset from the beginning to each element
 	for (size_t i = 0; i < uniqueSlots.size(); i++) {
 		DWORD offset = 0;
 		for (size_t j = 0; j < inputVertexDeclaration.declaration.size(); j++) {
-			if (inputVertexDeclaration.declaration[j].InputSlot == uniqueSlots[j]) {
-
+			if (inputVertexDeclaration.declaration[j].InputSlot == uniqueSlots[i]) {
 				// If using this, it defines the current element to be directly after the previous one in memory
 				if (inputVertexDeclaration.declaration[j].Offset == D3D11_APPEND_ALIGNED_ELEMENT) {
 					inputVertexDeclaration.declaration[j].Offset = offset;
@@ -356,15 +351,11 @@ HRESULT obtainVertexDeclarations(ID3D11DeviceContext* pContext, InputVertexDecla
 		}
 	}
 
-	OutputDebugStringW(L"------- Stage 5 complete!-----------");
-
 	// Create Output Vertex Declaration from the input vertex declaration
 	if (obtainOutputVertexDeclaration(inputVertexDeclaration, outputVertexDeclaration) != S_OK) {
 		OutputDebugStringW(L"ERROR 1: Output Vertex Declaration not obtained");
 		return E_FAIL;
 	}
-
-	OutputDebugStringW(L"------- Stage 6 complete!-----------");
 
 	return S_OK;
 }
@@ -424,10 +415,10 @@ static void dumpIndexesToFaces(T *pSrc, UINT bitLength, UINT StartIndexLocation,
 	else if (primitiveType == D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP) {
 		DWORD clockwiseOrNot = 0;
 		for (DWORD i = 0; i < dwPrimCount; i++) {
-			maxIdx = checkMin((T)(*pSrc2), maxIdx);
+			maxIdx = checkMax((T)(*pSrc2), maxIdx);
 
 			// Normal Order
-			if (!(clockwiseOrNot & 0x0)) {
+			if ((clockwiseOrNot & 0x1) != 0) {
 				maxIdx = checkMax((T)(*(pSrc2 + 1)), maxIdx);
 				maxIdx = checkMax((T)(*(pSrc2 + 2)), maxIdx);
 			}
@@ -462,7 +453,7 @@ static void dumpIndexesToFaces(T *pSrc, UINT bitLength, UINT StartIndexLocation,
 			minIdx = checkMin((T)(*pSrc2), minIdx);
 
 			// Normal Order
-			if (!(clockwiseOrNot & 0x0)) {
+			if ((clockwiseOrNot & 0x1) != 0) {
 				minIdx = checkMin((T)(*(pSrc2 + 1)), minIdx);
 				minIdx = checkMin((T)(*(pSrc2 + 2)), minIdx);
 			}
@@ -579,13 +570,12 @@ HRESULT obtainIndexBuffer(ID3D11DeviceContext* pContext, FACES* pFaces, UINT Sta
 	// Need to add minimum index to the index buffer since we could be starting at any point inside index buffer
 	// as specified by DrawIndexed or other draw calls. We have already added offset and StartIndexLocation,
 	// now we need to add either BaseVertexLocation or BaseIndexLocation = pFaces->minIndex
-	DWORD minIdx = pFaces->minIndex;
+	INT minIdx = -((INT)pFaces->minIndex);
 	for (DWORD i = 0; i < pFaces->primitiveCount; i++) {
-		pFaces->pFaces->v_1 += -(INT)minIdx;
-		pFaces->pFaces->v_2 += -(INT)minIdx;
-		pFaces->pFaces->v_3 += -(INT)minIdx;
+		pFaces->pFaces[i].v_1 += minIdx;
+		pFaces->pFaces[i].v_2 += minIdx;
+		pFaces->pFaces[i].v_3 += minIdx;
 	}
-
 
 	// Clean up resources
 	pContext->Unmap(copiedIndexBuffer, 0);
@@ -597,34 +587,47 @@ HRESULT obtainIndexBuffer(ID3D11DeviceContext* pContext, FACES* pFaces, UINT Sta
 }
 
 //-------------------------------------------- STEP 4 --------------------------------------------
-void DumpInputElementToBuffer(DXGI_FORMAT elemType, BYTE* pSrc, DWORD srcOffset, DWORD srcVertexSize, BYTE* pDest, DWORD destOffset, DWORD destVertexSize, DWORD vertexCount) {
+HRESULT DumpInputElementToBuffer(DXGI_FORMAT elemType, BYTE* pSrc, DWORD srcOffset, DWORD srcVertexSize, BYTE* pDest, DWORD destOffset, DWORD destVertexSize, DWORD vertexCount) {
 	// Iterate through all the vertices and copy the data of just this one semantic element (e.g. POSTION to VERTICES array)
 	for (DWORD i = 0; i < vertexCount; i++) {
-		BYTE unpackedData[64];
+		BYTE unpackedData[256];
 		DWORD compCnt = 0;
-		DWORD dataSize = 0;
 
 		// Copy element data to unpacked array
-		dataSize = D3DTypesDatabase::decodeAndCopy(elemType, pSrc+srcOffset, unpackedData, compCnt);
+		DWORD dataSize = D3DTypesDatabase::decodeAndCopy(elemType, pSrc+srcOffset, unpackedData, compCnt);
 
 		// Copy data from vertex buffer to list of VERTICES
+		if (dataSize > 64) {
+			OutputDebugStringW(L"ERROR 4: memcpy Out of bounds!");
+			return 1;
+		}
 		memcpy(pDest + destOffset, unpackedData, dataSize);
 
 		// Add to index we are at
 		pSrc += srcVertexSize;
 		pDest += destVertexSize;
 	}
+
+	return S_OK;
 }
 
 HRESULT obtainVertexBuffer(ID3D11DeviceContext* pContext, FACES* pFaces, VERTICES* pVertices, InputVertexDeclaration &inputVertexDeclaration, OutputVertexDeclaration &outputVertexDeclaration, INT BaseVertexLocation) {
+	
+	/*for (size_t j = 0; j < inputVertexDeclaration.declaration.size(); j++) {
+		OutputDebugStringA((std::string("IPT ELEE: ") + std::string(inputVertexDeclaration.declaration[j].UsageSemantic) + std::to_string(inputVertexDeclaration.declaration[j].Type)).c_str());
+	}
+	for (size_t j = 0; j < inputVertexDeclaration.declaration.size(); j++) {
+		OutputDebugStringA((std::string("OPT ELEE: ") + std::string(outputVertexDeclaration.declaration[j].UsageSemantic) + std::to_string(outputVertexDeclaration.declaration[j].Type)).c_str());
+	}*/
+	
 	// Dumps into a new buffer from GPU Memory
 	// Obtain vertex buffers from every slot in this draw call
 	for (size_t i = 0; i < inputVertexDeclaration.declaration.size(); i++) {
 		// Starting Locals
 		InputD3D11VertexElement inputElement = inputVertexDeclaration.declaration[i];
 		OutputD3D11VertexElement outputElement = outputVertexDeclaration.declaration[i];
-		ID3D11Buffer* pVertexBuffer;
-		ID3D11Buffer* pDestVertexBuffer;
+		ID3D11Buffer* pVertexBuffer = NULL;
+		ID3D11Buffer* pDestVertexBuffer = NULL;
 		UINT vertexStride = 0;
 		UINT vertexOffset = 0;
 
@@ -632,16 +635,27 @@ HRESULT obtainVertexBuffer(ID3D11DeviceContext* pContext, FACES* pFaces, VERTICE
 		pContext->IAGetVertexBuffers(inputElement.InputSlot, 1, &pVertexBuffer, &vertexStride, &vertexOffset);
 		if (!pVertexBuffer) {
 			OutputDebugStringW(L"4 ERROR: No Vertex Buffer obtained");
-			return E_FAIL;
+			continue;
 		}
 
+		ID3D11Device* pDeviceRef;
+		pContext->GetDevice(&pDeviceRef);
+		D3D11_BUFFER_DESC srcDesc;
+		pVertexBuffer->GetDesc(&srcDesc);
+		UINT x = srcDesc.ByteWidth;
+		UINT y = srcDesc.StructureByteStride;
+
 		// Copy buffer to Destination buffer
-		copyBuffer(pContext, pVertexBuffer, &pDestVertexBuffer);
+		if (FAILED(copyBuffer(pContext, pVertexBuffer, &pDestVertexBuffer))) {
+			OutputDebugStringW(L"4 ERROR: Copy Buffer Failed!");
+			SAFE_RELEASE(pVertexBuffer);
+			return E_FAIL;
+		}
 
 		// Map resource to be read from
 		D3D11_MAPPED_SUBRESOURCE mapData;
 		ZeroMemory(&mapData, sizeof(mapData));
-		if (pContext->Map(pDestVertexBuffer, 0, D3D11_MAP_READ, 0, &mapData) != S_OK) {
+		if (FAILED(pContext->Map(pDestVertexBuffer, 0, D3D11_MAP_READ, 0, &mapData))) {
 			OutputDebugStringW(L"4 ERROR: No Mapping obtained");
 			SAFE_RELEASE(pVertexBuffer);
 			SAFE_RELEASE(pDestVertexBuffer);
@@ -655,8 +669,14 @@ HRESULT obtainVertexBuffer(ID3D11DeviceContext* pContext, FACES* pFaces, VERTICE
 		BYTE* pVertexData = (BYTE*)mapData.pData + vertexOffset;
 
 		// Dump this particular input element from the vertex buffer into the VERTICES array
-		DumpInputElementToBuffer(inputElement.Type, pVertexData + (pFaces->minIndex + BaseVertexLocation) * vertexStride, inputElement.Offset, vertexStride, pVertices->pVertices, outputElement.Offset, pVertices->VertexSize, pVertices->VertexCount);
-		
+		//OutputDebugStringA((std::string("Now Dumping Input Element to Buffer!: ") + std::string(inputElement.UsageSemantic) + std::to_string(inputElement.Type)).c_str());
+		if (FAILED(DumpInputElementToBuffer(inputElement.Type, pVertexData + (pFaces->minIndex + BaseVertexLocation) * vertexStride, inputElement.Offset, vertexStride, pVertices->pVertices, outputElement.Offset, pVertices->VertexSize, pVertices->VertexCount))) {
+			OutputDebugStringW(L"FAILED to Copy input element to Buffer");
+			return E_FAIL;
+		}
+
+		//OutputDebugStringA((std::string("Successfully Dumped Input Element to Buffer!: ") + std::string(inputElement.UsageSemantic) + std::to_string(inputElement.Type)).c_str());
+
 		// Unmap and Free all resources to avoid memory leaks
 		pContext->Unmap(pDestVertexBuffer, 0);
 		SAFE_RELEASE(pDestVertexBuffer);
@@ -667,8 +687,69 @@ HRESULT obtainVertexBuffer(ID3D11DeviceContext* pContext, FACES* pFaces, VERTICE
 }
 
 //-------------------------------------------- STEP 5 --------------------------------------------
-void extractMeshToFile(VERTICES vertices, FACES faces) {
+UINT objectNumber = 0;
+
+// Extract mesh to .obj file
+void extractMeshToFile(VERTICES* vertices, FACES* faces, OutputVertexDeclaration outputVertexDeclaration) {
 	// Extract Vertices and Faces to .obj file
+	const char* path = "/Users/Kyrios/Desktop/Meshes/";
+	std::string directory = std::string(path);
+	std::string OBJName = directory + std::string("object_") + std::to_string(objectNumber) + std::string(".obj");
+	std::ofstream OBJFile(OBJName);
+
+	// Write Vertices to .obj
+	UINT positionOffset = 0;
+	for (size_t i = 0; i < outputVertexDeclaration.declaration.size(); i++) {
+		if (std::string(outputVertexDeclaration.declaration[i].UsageSemantic) == std::string("POSITION")) {
+			positionOffset = outputVertexDeclaration.declaration[i].Offset;
+			break;
+		}
+	}
+
+	// Write Vertices to .obj
+	BYTE* currentVertex = vertices->pVertices;
+	BYTE* currentFloat;
+	for (size_t i = 0; i < vertices->VertexCount; i++) {
+		// Reset currentFloat to currentVertex
+		currentFloat = currentVertex;
+
+		// Write vertex command
+		OBJFile << "v ";
+
+		// Write each POSITION coordinate to .obj file
+		float currentPos;
+		for (size_t f = 0; f < 2; f++) {
+			// Obtain first Float Coordinate
+			memcpy(&currentPos, currentFloat, sizeof(float));
+			OBJFile << std::to_string(currentPos) + std::string(" ");
+			currentFloat += sizeof(float);
+			currentPos = 0;
+		}
+		memcpy(&currentPos, currentFloat, sizeof(float));
+		OBJFile << std::to_string(currentPos);
+		OBJFile << "\n";
+
+		currentVertex += vertices->VertexSize;
+	}
+
+	// Write Faces to .obj
+	Face* currentFace = faces->pFaces;
+	for (size_t i = 0; i < faces->primitiveCount; i++) {
+		// First, Second, Third Vertex
+		OBJFile << "f ";
+		OBJFile << std::to_string(faces->pFaces[i].v_1+1) + std::string(" ");
+		OBJFile << std::to_string(faces->pFaces[i].v_2+1) + std::string(" ");
+		OBJFile << std::to_string(faces->pFaces[i].v_3+1);
+		OBJFile << "\n";
+
+		currentFace += 1;
+	}
+
+	// Close file
+	OBJFile.close();
+	OutputDebugStringA("Successfully Extracted Mesh to .obj file!");
+
+	objectNumber += 1;
 }
 
 //------------------------------------------------------------------------------------------------
@@ -703,26 +784,15 @@ UINT VertexInputAssemblies::getInputAssembly(ID3D11InputLayout* currentInputLayo
 HRESULT __stdcall hkCreateInputLayout(ID3D11Device* pDevice, const D3D11_INPUT_ELEMENT_DESC* pInputElementDescs, UINT NumElements, const void* pShaderBytecodeWithInputSignature, SIZE_T BytecodeLength, ID3D11InputLayout** ppInputLayout) {
 	// Create the input layout
 	if (pCreateInputLayoutDummy(pDevice, pInputElementDescs, NumElements, pShaderBytecodeWithInputSignature, BytecodeLength, ppInputLayout) != S_OK) {
-		//OutputDebugStringW(L"ERROR 0: Could not create input layout!");
+		OutputDebugStringW(L"ERROR 0: Could not create input layout!");
 		return E_FAIL;
-
 	}
-
-	//DUMP1 = true;
-	//DUMP2 = true; not supp to be here
-	/*if (DUMP1 && DUMP2 || !DUMP1 && !DUMP2) {
-		return S_OK;
-	}*/
-
-	//OutputDebugStringW(L"Successfully passed stage 0!");
 
 	// Find if it already exists and update it
 	auto mapIterator = sceneData.vertexInputStore.find(*ppInputLayout);
 	if (mapIterator != sceneData.vertexInputStore.end()) {
 		sceneData.vertexInputStore.erase(mapIterator);
 	}
-
-	//OutputDebugStringW(L"Successfully passed stage 1!");
 	
 	// Add all elements to input layout
 	OrigD3D11VertexDeclaration layouts;
@@ -743,75 +813,91 @@ HRESULT __stdcall hkCreateInputLayout(ID3D11Device* pDevice, const D3D11_INPUT_E
 		layouts.push_back(desc);
 	}
 
-	//OutputDebugStringW(L"Successfully passed stage 2!");
-
 	// Add to sceneData database
 	sceneData.addInputAssembly(*ppInputLayout, layouts);
 
-	//OutputDebugStringW(L"Successfully passed stage 3!");
-
-	// Output all the scene data currently -  Visible in debug view
-	// [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[
-	/*for (size_t i = 0; i < layouts.size(); i++) {
-		DebugLogger::print_input_element_description(layouts[i]);
-	}*/
-	// ]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]
-
-	//OutputDebugStringW(L"Successfully passed stage 4!");
-	
-
 	// End the dumping
-
 	return S_OK;
 }
 
 void __stdcall hkDrawIndexed(ID3D11DeviceContext* pContext, UINT IndexCount, UINT StartIndexLocation, INT BaseVertexLocation) {
-	// We're only dumping 1 Vertex buffer
-	if (DUMP1 && DUMP2 || !DUMP1 && !DUMP2) {
+	if (!activateRip) {
 		return pDrawIndexedDummy(pContext, IndexCount, StartIndexLocation, BaseVertexLocation);
 	}
-	
-	OutputDebugStringW(L"START: Obtaining Vertex Buffer");
-	
-	//################################################################################################
-	// TESTING
+
+	//OutputDebugStringA((std::to_string(objectNumber)+std::string(" --------------------------------------")).c_str());
+	//OutputDebugStringA("Stage1 START");
 	// Step 1: Get Vertex Declarations - Check if we've looped the scene (Check input assembly is already in data map)
 	InputVertexDeclaration inputVertexDeclaration;
 	OutputVertexDeclaration outputVertexDeclaration;
-	obtainVertexDeclarations(pContext, inputVertexDeclaration, outputVertexDeclaration);
-	
-	// PRINT THEM
-	
-	// Step by step testing - this code is a stopper
-	DUMP2 = true;
-	return pDrawIndexedDummy(pContext, IndexCount, StartIndexLocation, BaseVertexLocation);
-	//################################################################################################
+	if (obtainVertexDeclarations(pContext, inputVertexDeclaration, outputVertexDeclaration) != S_OK) {
+		errorFound = true;
+		return pDrawIndexedDummy(pContext, IndexCount, StartIndexLocation, BaseVertexLocation);
+	}
+	//OutputDebugStringA("Stage1 DONE");
 
+	//OutputDebugStringA("Stage2 START");
 	// Step 2: Get Primitives & Calculate number of primitives and create an array from this
 	D3D11_PRIMITIVE_TOPOLOGY topology = obtainPrimitives(pContext);
-	if (topology != D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP || topology != D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST) {
+	UINT faceCount;
+	if (topology == D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP || topology == D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST) {
+		faceCount = calculatePrimitiveCount(IndexCount, topology);
+	}
+	else {
 		OutputDebugStringW(L"ERROR S: Primitive error - Wrong primitives used");
 		return pDrawIndexedDummy(pContext, IndexCount, StartIndexLocation, BaseVertexLocation);
 	}
-	UINT faceCount = calculatePrimitiveCount(IndexCount, topology);
 	FACES faces(faceCount);
-
-	// Step 3: Dump Index buffer
+	//OutputDebugStringA("Stage2 DONE");
+	
+	//OutputDebugStringA("Stage3 START");
+	// Step 3: Obtain Index buffer and list of faces
 	if (obtainIndexBuffer(pContext, &faces, StartIndexLocation, BaseVertexLocation, topology) != S_OK) {
 		OutputDebugStringW(L"ERROR S: Failed to Dump index buffer to Faces");
-		return;
+		return pDrawIndexedDummy(pContext, IndexCount, StartIndexLocation, BaseVertexLocation);
 	}
-	
-	// Step 4: 
-	//obtainVertexBuffer();
+	//OutputDebugStringA("Stage3 DONE");
 
-	// Step 6: Extract to .obj File
-	//extractMeshToFile();
+	//OutputDebugStringA("Stage4 START");
+	// Step 4: Obtain Vertex Buffer and list of Vertices
+	DWORD vertexNumber = faces.getVertexCount();
+	//OutputDebugStringA((std::string("Vertex Number to extract: ") + std::to_string(vertexNumber)).c_str());
+	DWORD vertexSize = 0;
+	for (size_t i = 0; i < outputVertexDeclaration.declaration.size(); i++) {
+		vertexSize += outputVertexDeclaration.declaration[i].Size;
+	}
+	//OutputDebugStringA((std::string("Vertex Size: ") + std::to_string(vertexSize)).c_str());
+	VERTICES vertices(vertexNumber, vertexSize);
+	obtainVertexBuffer(pContext, &faces, &vertices, inputVertexDeclaration, outputVertexDeclaration, BaseVertexLocation);
+	//OutputDebugStringA("Stage4 DONE");
 
-	DUMP2 = true;
+	//OutputDebugStringA("Stage5 START");
+	// Step 5: Extract to .obj File
+	extractMeshToFile(&vertices, &faces, outputVertexDeclaration);
+	//OutputDebugStringA("Stage5 DONE");
 
-	OutputDebugStringW(L"END: Finished Dump! Vertices+Faces Extracted!");
+	//OutputDebugStringW(L"END: Finished Dump! Vertices+Faces Extracted!");
+
 	return pDrawIndexedDummy(pContext, IndexCount, StartIndexLocation, BaseVertexLocation);
+}
+
+// This function will be used to essentially act as a stopper
+HRESULT hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags) {
+	// End Condition - activateRip = true therefore, you pressed Q and DumpOneFrame = true therefore, you're after you've dumped one frame - RESET ALL
+	// OR an error was found - so now RESET ALL
+	if (dumpOneFrame && activateRip || errorFound) {
+		dumpOneFrame = false;
+		activateRip = false;
+		errorFound = false;
+		objectNumber = 0;
+	}
+
+	// Q had been pressed, activate dumping of one frame - Go to next frame for dump
+	if (activateRip) {
+		dumpOneFrame = true;
+	}
+
+	return pPresentDummy(pSwapChain, SyncInterval, Flags);
 }
 
 //------------------------------------------------------------------------------------------------
@@ -898,6 +984,52 @@ void loadOriginalD3D11()
 
 }
 
+bool ObtainAllVTablePointers() {
+	// Dummy Objects to be created
+	ID3D11Device* device;
+	ID3D11DeviceContext* context;
+	IDXGISwapChain* swap_chain;
+
+	// Function arguments for D3D11CreateDeviceAndSwapChain
+	DXGI_SWAP_CHAIN_DESC sd;
+	ZeroMemory(&sd, sizeof(sd));
+	sd.BufferCount = 2;
+	sd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+	sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+	sd.OutputWindow = GetForegroundWindow();
+	sd.SampleDesc.Count = 1;
+	sd.Windowed = TRUE;
+	sd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+	const D3D_FEATURE_LEVEL feature_levels[] = { D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_0, };
+
+	// Call function to create Dummy objects and obtain VTables for them
+	if (D3D11CreateDeviceAndSwapChain(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, 0, feature_levels, 2, D3D11_SDK_VERSION, &sd, &swap_chain, &device, nullptr, nullptr) == S_OK)
+	{
+		// OutputDebugStringW(L"Obtained VTable Pointers!");
+
+		// Obtain VTable Pointers
+		/*void** deviceContextVTable = *reinterpret_cast<void***>(device);
+		void** drawContextVTable = *reinterpret_cast<void***>(context);*/
+		void** presentVTable = *reinterpret_cast<void***>(swap_chain);
+
+		// Release all dummy objects
+		device->Release();
+		//context->Release();
+		swap_chain->Release();
+		
+		// Obtain Function Pointers
+		/*pCreateInputLayoutOriginal = (CreateInputLayout_t)deviceContextVTable[11];
+		pDrawIndexedOriginal = (DrawIndexed_t)drawContextVTable[12];*/
+		pPresentOriginal = (Present_t)presentVTable[8];
+
+		// Succeeded
+		return true;
+	}
+
+	// Failed
+	return false;
+}
+
 HRESULT WINAPI D3D11CoreCreateDevice(IDXGIFactory* pFactory, IDXGIAdapter* pAdapter, D3D_DRIVER_TYPE DriverType, HMODULE Software, UINT Flags, const D3D_FEATURE_LEVEL* pFeatureLevels, UINT FeatureLevels, UINT SDKVersion, ID3D11Device** ppDevice, D3D_FEATURE_LEVEL* pFeatureLevel)
 {
 	LOG("INIT: D3D11CoreCreateDevice");
@@ -921,6 +1053,8 @@ HRESULT WINAPI D3D11CoreCreateDevice(IDXGIFactory* pFactory, IDXGIAdapter* pAdap
 
 HRESULT WINAPI D3D11CreateDevice(IDXGIAdapter* pAdapter, D3D_DRIVER_TYPE DriverType, HMODULE Software, UINT Flags, const D3D_FEATURE_LEVEL* pFeatureLevels, UINT FeatureLevels, UINT SDKVersion, ID3D11Device** ppDevice, D3D_FEATURE_LEVEL* pFeatureLevel, ID3D11DeviceContext** ppImmediateContext)
 {
+	OutputDebugStringW(L"CreateDevice called");
+
 	LOG("INIT: D3D11CreateDevice, FeatureLevels: " + std::to_string(FeatureLevels));
 
 	if (FeatureLevels > 0)
@@ -940,6 +1074,8 @@ HRESULT WINAPI D3D11CreateDevice(IDXGIAdapter* pAdapter, D3D_DRIVER_TYPE DriverT
 	HRESULT result;
 
 #ifndef CREATE_DX12
+	// Enable debug layer
+	//Flags |= D3D11_CREATE_DEVICE_DEBUG;
 	result = createDevice(pAdapter, DriverType, Software, Flags, pFeatureLevels, FeatureLevels, SDKVersion, ppDevice, pFeatureLevel, ppImmediateContext);
 
 	if (result != S_OK) {
@@ -947,15 +1083,19 @@ HRESULT WINAPI D3D11CreateDevice(IDXGIAdapter* pAdapter, D3D_DRIVER_TYPE DriverT
 	}
 	else {
 		LOG("INIT: D3D11CreateDevice: OK!");
-		
-		// Step 1: Hook into drawIndexed
-		MH_STATUS status = MH_Initialize();
+
+		// Check Status of minhook
 		if (status != MH_OK) {
 			OutputDebugStringW(L"HOOK ERROR: FAILED TO INIT");
 			return result;
 		}
-
 		OutputDebugStringW(L"HOOK: ATTEMPTING HOOK");
+
+		createDeviceUsed = true;
+		if (!ObtainAllVTablePointers()) {
+			return 0;
+		}
+		obtainedAllPointers = true;
 
 		void** drawContextVTable = *reinterpret_cast<void***>(*ppImmediateContext);
 		pDrawIndexedOriginal = (DrawIndexed_t)drawContextVTable[12];
@@ -963,31 +1103,44 @@ HRESULT WINAPI D3D11CreateDevice(IDXGIAdapter* pAdapter, D3D_DRIVER_TYPE DriverT
 		void** deviceContextVTable = *reinterpret_cast<void***>(*ppDevice);
 		pCreateInputLayoutOriginal = (CreateInputLayout_t)deviceContextVTable[11];
 
-		// First hook into CreateInputLayout
-		if (MH_CreateHook(reinterpret_cast<void**>(pCreateInputLayoutOriginal), &hkCreateInputLayout, reinterpret_cast<void**>(&pCreateInputLayoutDummy)) != MH_OK) {
+		// First hook into Present Hook
+		if (MH_CreateHook(reinterpret_cast<void**>(pPresentOriginal), &hkPresent, reinterpret_cast<void**>(&pPresentDummy)) != MH_OK) {
 			OutputDebugStringW(L"HOOK ERROR 1: WE HAVE NOT HOOKED");
+			return result;
+		}
+
+		if (MH_EnableHook(pPresentOriginal) != MH_OK) {
+			OutputDebugStringW(L"HOOK ERROR 1: NOT ENABLED");
+			return result;
+		}
+
+		OutputDebugStringW(L"HOOK 1: Present Succeeded!");
+
+		// Second hook into CreateInputLayout
+		if (MH_CreateHook(reinterpret_cast<void**>(pCreateInputLayoutOriginal), &hkCreateInputLayout, reinterpret_cast<void**>(&pCreateInputLayoutDummy)) != MH_OK) {
+			OutputDebugStringW(L"HOOK ERROR 2: WE HAVE NOT HOOKED");
 			return result;
 		}
 		
 		if (MH_EnableHook(pCreateInputLayoutOriginal) != MH_OK) {
-			OutputDebugStringW(L"HOOK ERROR 1: NOT ENABLED");
+			OutputDebugStringW(L"HOOK ERROR 2: NOT ENABLED");
 			return result;
 		}
 		
-		OutputDebugStringW(L"HOOK: CreateInputLayout Succeeded!");
+		OutputDebugStringW(L"HOOK 2: CreateInputLayout Succeeded!");
 
-		// Second hook into DrawIndexed
+		// Third hook into DrawIndexed
 		if (MH_CreateHook(reinterpret_cast<void**>(pDrawIndexedOriginal), &hkDrawIndexed, reinterpret_cast<void**>(&pDrawIndexedDummy)) != MH_OK) {
-			OutputDebugStringW(L"HOOK ERROR 2: WE HAVE NOT HOOKED");
+			OutputDebugStringW(L"HOOK ERROR 3: WE HAVE NOT HOOKED");
 			return result;
 		}
 
 		if (MH_EnableHook(pDrawIndexedOriginal) != MH_OK) {
-			OutputDebugStringW(L"HOOK ERROR 2: WE HAVE NOT HOOKED");
+			OutputDebugStringW(L"HOOK ERROR 3: WE HAVE NOT HOOKED");
 			return result;
 		}
 
-		OutputDebugStringW(L"HOOK: DrawIndexed Succeeded!");
+		OutputDebugStringW(L"HOOK 3: DrawIndexed Succeeded!");
 
 	}
 
@@ -1069,6 +1222,7 @@ HRESULT WINAPI D3D11CreateDevice(IDXGIAdapter* pAdapter, D3D_DRIVER_TYPE DriverT
 
 HRESULT WINAPI D3D11CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter, D3D_DRIVER_TYPE DriverType, HMODULE Software, UINT Flags, const D3D_FEATURE_LEVEL* pFeatureLevels, UINT FeatureLevels, UINT SDKVersion, const DXGI_SWAP_CHAIN_DESC* pSwapChainDesc, IDXGISwapChain** ppSwapChain, ID3D11Device** ppDevice, D3D_FEATURE_LEVEL* pFeatureLevel, ID3D11DeviceContext** ppImmediateContext)
 {
+	OutputDebugStringW(L"CreateDeviceAndSwapChain called");
 	LOG("INIT: D3D11CreateDeviceAndSwapChain");
 
 	if (ppSwapChain && !pSwapChainDesc)
@@ -1087,29 +1241,66 @@ HRESULT WINAPI D3D11CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter, D3D_DRIVER_
 
 	LOG("INIT: D3D11CreateDeviceAndSwapChain result: " + int_to_hex(result));
 
-	/*MH_STATUS status = MH_Initialize();
-	if (status != MH_OK) {
-		OutputDebugStringW(L"HOOK: INITIALISING MHOOK COMPLETE");
+	if (createDeviceUsed) {
 		return result;
 	}
 
-	OutputDebugStringW(L"HOOK: ATTEMPTING HOOK");
+	// Check Status of minhook
+	if (status != MH_OK) {
+		OutputDebugStringW(L"HOOK ERROR: FAILED TO INIT");
+		return result;
+	}
+
+	OutputDebugStringW(L"HOOK: ATTEMPTING HOOKS");
+
+	void** presentContextVTable = *reinterpret_cast<void***>(*ppSwapChain);
+	pPresentOriginal = (Present_t)presentContextVTable[8];
 
 	void** drawContextVTable = *reinterpret_cast<void***>(*ppImmediateContext);
 	pDrawIndexedOriginal = (DrawIndexed_t)drawContextVTable[12];
 
-	if (MH_CreateHook(reinterpret_cast<void**>(pDrawIndexedOriginal), &hkDrawIndexed, reinterpret_cast<void**>(pDrawIndexedDummy)) != MH_OK) {
-		OutputDebugStringW(L"HOOK: WE HAVE NOT HOOKED");
+	void** deviceContextVTable = *reinterpret_cast<void***>(*ppDevice);
+	pCreateInputLayoutOriginal = (CreateInputLayout_t)deviceContextVTable[11];
+
+	// First hook into Present Hook
+	if (MH_CreateHook(reinterpret_cast<void**>(pPresentOriginal), &hkPresent, reinterpret_cast<void**>(&pPresentDummy)) != MH_OK) {
+		OutputDebugStringW(L"HOOK ERROR 1: WE HAVE NOT HOOKED");
 		return result;
 	}
 
-	OutputDebugStringW(L"HOOK: WE HAVE HOOK!");
+	if (MH_EnableHook(pPresentOriginal) != MH_OK) {
+		OutputDebugStringW(L"HOOK ERROR 1: NOT ENABLED");
+		return result;
+	}
+
+	OutputDebugStringW(L"HOOK: Present Succeeded!");
+
+	// Second hook into CreateInputLayout
+	if (MH_CreateHook(reinterpret_cast<void**>(pCreateInputLayoutOriginal), &hkCreateInputLayout, reinterpret_cast<void**>(&pCreateInputLayoutDummy)) != MH_OK) {
+		OutputDebugStringW(L"HOOK ERROR 2: WE HAVE NOT HOOKED");
+		return result;
+	}
+
+	if (MH_EnableHook(pCreateInputLayoutOriginal) != MH_OK) {
+		OutputDebugStringW(L"HOOK ERROR 2: NOT ENABLED");
+		return result;
+	}
+
+	OutputDebugStringW(L"HOOK: CreateInputLayout Succeeded!");
+
+	// Third hook into DrawIndexed
+	if (MH_CreateHook(reinterpret_cast<void**>(pDrawIndexedOriginal), &hkDrawIndexed, reinterpret_cast<void**>(&pDrawIndexedDummy)) != MH_OK) {
+		OutputDebugStringW(L"HOOK ERROR 3: WE HAVE NOT HOOKED");
+		return result;
+	}
 
 	if (MH_EnableHook(pDrawIndexedOriginal) != MH_OK) {
+		OutputDebugStringW(L"HOOK ERROR 3: WE HAVE NOT HOOKED");
 		return result;
-	}*/
+	}
 
-	return result;
+	OutputDebugStringW(L"HOOK: DrawIndexed Succeeded!");
+
 #else
 	if (ppSwapChain && !pSwapChainDesc)
 		return E_INVALIDARG;
@@ -1167,7 +1358,7 @@ HRESULT WINAPI D3D11CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter, D3D_DRIVER_
 
 	return S_OK;
 #endif
-
+	return result;
 }
 
 HRESULT WINAPI D3D11On12CreateDevice(IUnknown* pDevice, UINT Flags, const D3D_FEATURE_LEVEL* pFeatureLevels, UINT FeatureLevels, IUnknown* const* ppCommandQueues, UINT NumQueues, UINT NodeMask, ID3D11Device** ppDevice, ID3D11DeviceContext** ppImmediateContext, D3D_FEATURE_LEVEL* pChosenFeatureLevel)
@@ -1198,23 +1389,66 @@ DWORD __stdcall EjectThread(LPVOID lpParameter) {
 }
 
 int WINAPI main() {
+	//OutputDebugStringA("Obtaining all VTable Pointers");
+	// Step 0: Obtain DXGI, D3D11 Function Pointers firstly
+	//OutputDebugStringW(L"INITIALISING MINHOOK");
+	//// Step 1: Initialise minhook
+	//status = MH_Initialize();
+	//if (status != MH_OK) {
+	//	OutputDebugStringW(L"HOOK ERROR: FAILED TO INIT");
+	//}
+	//OutputDebugStringW(L"MINHOOK INITIALISED!");
+	//// First hook into Present
+	//if (MH_CreateHook(reinterpret_cast<void**>(pPresentOriginal), &hkPresent, reinterpret_cast<void**>(&pPresentDummy)) != MH_OK) {
+	//	OutputDebugStringW(L"HOOK ERROR 1: WE HAVE NOT HOOKED");
+	//}
+	//if (MH_EnableHook(pPresentOriginal) != MH_OK) {
+	//	OutputDebugStringW(L"HOOK ERROR 1: NOT ENABLED");
+	//}
+	//OutputDebugStringW(L"HOOK 1: Present Succeeded!");
+	//// Second Hook into CreateInputLayout
+	//if (MH_CreateHook(reinterpret_cast<void**>(pCreateInputLayoutOriginal), &hkCreateInputLayout, reinterpret_cast<void**>(&pCreateInputLayoutDummy)) != MH_OK) {
+	//	OutputDebugStringW(L"HOOK ERROR 2: WE HAVE NOT HOOKED");
+	//}
+	//if (MH_EnableHook(pCreateInputLayoutOriginal) != MH_OK) {
+	//	OutputDebugStringW(L"HOOK ERROR 2: NOT ENABLED");
+	//}
+	//OutputDebugStringW(L"HOOK 2: CreateInputLayout Succeeded!");
+	//// Third hook into DrawIndexed
+	//if (MH_CreateHook(reinterpret_cast<void**>(pDrawIndexedOriginal), &hkDrawIndexed, reinterpret_cast<void**>(&pDrawIndexedDummy)) != MH_OK) {
+	//	OutputDebugStringW(L"HOOK ERROR 3: WE HAVE NOT HOOKED");
+	//}
+	//if (MH_EnableHook(pDrawIndexedOriginal) != MH_OK) {
+	//	OutputDebugStringW(L"HOOK ERROR 3: WE HAVE NOT HOOKED");
+	//}
+	//OutputDebugStringW(L"HOOK 3: DrawIndexed Succeeded!");
+	//OutputDebugStringW(L"HOOK ALL: SUCCEEDED");
+
+	int counter = 0;
+
 	while (true) {
 		Sleep(50);
 
+		if (counter < 5000 || counter > 5050) {
+			counter += 50;
+		}
+		else if (counter > 4900 && counter < 5100) {
+			activateRip = true;
+		}
+		
+
 		if (GetAsyncKeyState('Q') & 1) {
-			DUMP1 = true;
+			activateRip = true;
 			OutputDebugStringW(L"Q was pressed!");
 		}
 
 		// Print global information
 		if (GetAsyncKeyState('P') & 1) {
-			OutputDebugStringA(std::to_string(DUMP1).c_str());
-			OutputDebugStringA(std::to_string(DUMP2).c_str());
+			OutputDebugStringA(std::to_string(dumpOneFrame).c_str());
 
 			// Check Scenedata is still working
 			OutputDebugStringA(std::to_string(sceneData.vertexInputStore.size()).c_str());
 		}
-
 
 		if (GetAsyncKeyState(VK_F1)) {
 			break;
@@ -1244,6 +1478,16 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
 
 			dll_handle = hinstDLL;
 			loadOriginalD3D11();
+
+			OutputDebugStringW(L"INITIALISING MINHOOK");
+
+			// Step 1: Initialise minhook
+			status = MH_Initialize();
+			if (status != MH_OK) {
+				OutputDebugStringW(L"HOOK ERROR: FAILED TO INIT");
+			}
+
+			OutputDebugStringW(L"MINHOOK INITIALISED!");
 
 			CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)main, NULL, 0, NULL);
 
@@ -1283,32 +1527,30 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
 // 
 //------------------------------------------------------------------------------------------------
 
-
-
 void DebugLogger::print_input_element_description(OrigD3D11InputElementDesc desc) {
 	OutputDebugStringA("ORIG INPUT ELEM DESC ---------------------------------------------------");
 	OutputDebugStringA(desc.SemanticName);
-	OutputDebugStringA(std::to_string(desc.SemanticIndex).c_str());
-	OutputDebugStringA(std::to_string(desc.Format).c_str());
-	OutputDebugStringA(std::to_string(desc.InputSlot).c_str());
-	OutputDebugStringA(std::to_string(desc.AlignedByteOffset).c_str());
+	OutputDebugStringA((std::string("SM Index: ") + std::to_string(desc.SemanticIndex)).c_str());
+	OutputDebugStringA((std::string("Format: ") + std::to_string(desc.Format)).c_str());
+	OutputDebugStringA((std::string("Slot: ") + std::to_string(desc.InputSlot)).c_str());
+	OutputDebugStringA((std::string("ABOffset: ") + std::to_string(desc.AlignedByteOffset)).c_str());
 	if (desc.InputSlotClass == 0) {
-		OutputDebugStringA("D3D11_INPUT_PER_VERTEX_DATA");
+		OutputDebugStringA((std::string("ISC: ") + std::string("D3D11_INPUT_PER_VERTEX_DATA")).c_str());
 	}
 	else {
-		OutputDebugStringA("D3D11_INPUT_PER_INSTANCE_DATA");
+		OutputDebugStringA((std::string("ISC: ") + std::string("D3D11_INPUT_PER_INSTANCE_DATA")).c_str());
 	}
-	OutputDebugStringA(std::to_string(desc.InstanceDataStepRate).c_str());
+	OutputDebugStringA((std::string("IDSR: ") + std::to_string(desc.InstanceDataStepRate)).c_str());
 	OutputDebugStringA("---------------------------------------------------");
 }
 
 void DebugLogger::print_input_d3d11_vertex_element(InputD3D11VertexElement inputElem) {
-	OutputDebugStringA("INPUT VERTEX ELEM ---------------------------------------------------");
+	OutputDebugStringA("INPUT VERTEX ELEM =====================================================");
 	OutputDebugStringA(inputElem.UsageSemantic);
-	OutputDebugStringA(std::to_string(inputElem.SemanticIndex).c_str());
-	OutputDebugStringA(std::to_string(inputElem.Type).c_str());
-	OutputDebugStringA(std::to_string(inputElem.InputSlot).c_str());
-	OutputDebugStringA(std::to_string(inputElem.Size).c_str()); // Always zero for now
-	OutputDebugStringA(std::to_string(inputElem.Offset).c_str());
-	OutputDebugStringA("---------------------------------------------------");
+	OutputDebugStringA((std::string("SM Index: ") + std::to_string(inputElem.SemanticIndex)).c_str());
+	OutputDebugStringA((std::string("Type: ") + std::to_string(inputElem.Type)).c_str());
+	OutputDebugStringA((std::string("Slot: ") + std::to_string(inputElem.InputSlot)).c_str());
+	OutputDebugStringA((std::string("Size: ") + std::to_string(inputElem.Size)).c_str()); // Always zero for now
+	OutputDebugStringA((std::string("Offset: ") + std::to_string(inputElem.Offset)).c_str());
+	OutputDebugStringA("=======================================================================");
 }

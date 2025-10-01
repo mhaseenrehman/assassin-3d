@@ -131,7 +131,7 @@ public:
 	static DWORD dt_R16_TYPELESS(const void* pData, void* pUnpacked, DWORD& compCnt);
 	static DWORD dt_R16_FLOAT(const void* pData, void* pUnpacked, DWORD& compCnt);
 	static DWORD dt_R16_UNORM(const void* pData, void* pUnpacked, DWORD& compCnt);
-	static DWORD dt_D16_UNORM(const void* pData, void* pUnpacked, DWORD& compCnt);
+	//static DWORD dt_D16_UNORM(const void* pData, void* pUnpacked, DWORD& compCnt);
 	static DWORD dt_R16_UINT(const void* pData, void* pUnpacked, DWORD& compCnt);
 	static DWORD dt_R16_SNORM(const void* pData, void* pUnpacked, DWORD& compCnt);
 	static DWORD dt_R16_SINT(const void* pData, void* pUnpacked, DWORD& compCnt);
@@ -139,7 +139,7 @@ public:
 	// 8 bytes - includes UNORM and SNORM type obtainers
 	static DWORD dt_R8G8B8A8_TYPELESS(const void* pData, void* pUnpacked, DWORD& compCnt);
 	static DWORD dt_R8G8B8A8_UNORM(const void* pData, void* pUnpacked, DWORD& compCnt);
-	static DWORD dt_R8G8B8A8_UNORM_SRGB(const void* pData, void* pUnpacked, DWORD& compCnt);
+	//static DWORD dt_R8G8B8A8_UNORM_SRGB(const void* pData, void* pUnpacked, DWORD& compCnt);
 	static DWORD dt_R8G8B8A8_UINT(const void* pData, void* pUnpacked, DWORD& compCnt);
 	static DWORD dt_R8G8B8A8_SNORM(const void* pData, void* pUnpacked, DWORD& compCnt);
 	static DWORD dt_R8G8B8A8_SINT(const void* pData, void* pUnpacked, DWORD& compCnt);
@@ -156,8 +156,5 @@ public:
 	static DWORD dt_R8_SNORM(const void* pData, void* pUnpacked, DWORD& compCnt);
 	static DWORD dt_R8_SINT(const void* pData, void* pUnpacked, DWORD& compCnt);
 
-	static DWORD dt_A8_UNORM(const void* pData, void* pUnpacked, DWORD& compCnt);
-
-	// Miscellaneous Utility - Data type converters
-	float USHORT_to_FLOAT(USHORT u);
+	//static DWORD dt_A8_UNORM(const void* pData, void* pUnpacked, DWORD& compCnt);
 };

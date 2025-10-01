@@ -1,11 +1,12 @@
 #pragma once
 
 // DirectX11 Header Files
-#include "d3d11.h"
-#include "d3d12.h"
+
 #include "..\d3d12-proxy\WrappedD3D12Device.h"
 #include "d3dtypes.h"
 #include <string>
+#include "d3d11.h"
+#include "dxgi1_2.h"
 
 //------------------------------------------------------------------------------------------------
 // 
@@ -81,8 +82,6 @@ struct OutputD3D11VertexElement {
 	DWORD                       Offset;
 	DWORD						Size;
 	DXGI_FORMAT					Type;
-
-
 };
 
 struct OutputVertexDeclaration {
@@ -129,11 +128,9 @@ struct FACES {
 	}
 
 	DWORD getVertexCount() {
-		return 1 + maxIndex + minIndex;
+		return 1 + maxIndex - minIndex;
 	}
 };
-
-
 
 // Input assembly database
 class VertexInputAssemblies {
@@ -145,14 +142,46 @@ public:
 	UINT getInputAssembly(ID3D11InputLayout* currentInputLayout, OrigD3D11VertexDeclaration& elements);
 };
 
+
+// OBJ Constructs
+struct OBJ_FACE {
+	int f1;
+	int f2;
+	int f3;
+};
+
+struct OBJ_VERTEX {
+	float x;
+	float y;
+	float z;
+};
+
+// Not needed since Vertex Normals are automatically calculated
+// from .obj Files from faces and vertex positions
+struct OBJ_VERTEX_NORMAL {
+	float i;
+	float j;
+	float k;
+};
+
 //------------------------------------------------------------------------------------------------
 // 
 //											BASE DX11 HOOK
 // 
 //------------------------------------------------------------------------------------------------
+// Status of Hooking Library
+MH_STATUS status;
 
-bool DUMP1 = false;
-bool DUMP2 = false;
+// Pre-hooking Variables
+bool firstCDU = false;
+int firstCDUI = 0;
+bool createDeviceUsed = false;
+bool obtainedAllPointers = false;
+
+// Post-hooking Variables
+bool activateRip = false;
+bool dumpOneFrame = false;
+bool errorFound = false;
 
 typedef HRESULT(WINAPI* D3D11_Core_Create_Device)(IDXGIFactory* pFactory, IDXGIAdapter* pAdapter, D3D_DRIVER_TYPE DriverType, HMODULE Software, UINT Flags, const D3D_FEATURE_LEVEL* pFeatureLevels, UINT FeatureLevels, UINT SDKVersion, ID3D11Device** ppDevice, D3D_FEATURE_LEVEL* pFeatureLevel);
 typedef HRESULT(WINAPI* D3D11_Create_Device)(IDXGIAdapter* pAdapter, D3D_DRIVER_TYPE DriverType, HMODULE Software, UINT Flags, const D3D_FEATURE_LEVEL* pFeatureLevels, UINT FeatureLevels, UINT SDKVersion, ID3D11Device** ppDevice, D3D_FEATURE_LEVEL* pFeatureLevel, ID3D11DeviceContext** ppImmediateContext);

@@ -4,13 +4,16 @@
 // Windows Header Files
 #include <windows.h>
 #include <string>
+#include <iostream>
 #include <fstream>
 #include <iomanip>
 #include <sstream>
 #include <cstdarg>
 #include <vector>
 #include <map>
+#include <stdexcept>
 
 
 // Hooking Header Files
 #include "MinHook.h"
+
